@@ -33,3 +33,7 @@ data/processed/*
 # ML artifacts
 ml/models/**/*.joblib
 ml/models/**/*.pkl
+.claude/projects/F--IndightCart/memory/MEMORY.md
+.claude/projects/F--IndightCart/memory/phase-1-complete.md
+ml/models/churn/metadata.json
+ml/models/next_purchase/metadata.json

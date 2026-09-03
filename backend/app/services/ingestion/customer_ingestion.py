@@ -90,6 +90,18 @@ class CustomerOrderIngestionService:
         else:
             df["created_at"] = None
 
+        # Keep only columns belonging to the Customer entity; drop source-only
+        # extras (e.g. customer_zip_code_prefix) that are not on the model.
+        _entity_cols = {
+            "customer_id",
+            "customer_unique_id",
+            "customer_city",
+            "customer_state",
+            "customer_country",
+            "created_at",
+        }
+        df = df[[c for c in _entity_cols if c in df.columns]]
+
         # Deduplicate on customer_id keeping first
         df = df.dropna(subset=["customer_id"])
         df = df[df["customer_id"] != ""]
@@ -151,6 +163,17 @@ class CustomerOrderIngestionService:
             df["order_status"] = "delivered"
         else:
             df["order_status"] = df["order_status"].astype(str).str.strip().replace("nan", "delivered")
+
+        # Keep only columns belonging to the Order entity; drop source-only
+        # extras (e.g. order_approved_at, order_delivered_*) not on the model.
+        _entity_cols = {
+            "order_id",
+            "customer_id",
+            "order_date",
+            "order_status",
+            "order_value",
+        }
+        df = df[[c for c in _entity_cols if c in df.columns]]
 
         # Deduplicate on order_id
         df = df.dropna(subset=["order_id", "customer_id"])

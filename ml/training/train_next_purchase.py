@@ -78,12 +78,13 @@ def train_next_purchase_model(
     repeat_customers = target_df["customer_id"].nunique()
 
     if repeat_customers < 30 or features_df.empty:
+        mean_txt = f"{baseline_mean:.1f}" if baseline_mean is not None else "N/A"
         return {
             "model": None,
             "baseline_mean": baseline_mean,
             "metrics": {},
             "model_type": "statistical_baseline",
-            "message": f"Using statistical baseline (mean={baseline_mean:.1f} days); "
+            "message": f"Using statistical baseline (mean={mean_txt} days); "
                        f"need >= 30 repeat customers for ML model (have {repeat_customers})",
         }
 

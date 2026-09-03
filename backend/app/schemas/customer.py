@@ -206,3 +206,90 @@ class CustomersListResponse(BaseModel):
     total: int
     page: int = 1
     page_size: int = 50
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — ML Schemas
+# ---------------------------------------------------------------------------
+
+class ChurnPredictionSchema(BaseModel):
+    """Churn prediction for a single customer."""
+    customer_id: str
+    churn_probability: float = Field(..., description="Probability of churn (0-1)")
+    churned: bool = Field(..., description="Binary churn prediction")
+    risk_level: str = Field(..., description="Human-friendly risk level")
+    summary: str = Field(..., description="One-line human-friendly summary")
+    recommended_action: str = Field(..., description="Suggested non-causal action")
+    model_used: str = Field("", description="Name of the ML model used")
+    features_used: List[str] = Field(default_factory=list)
+
+
+class NextPurchasePredictionSchema(BaseModel):
+    """Next-purchase prediction for a single customer."""
+    customer_id: str
+    last_order_date: Optional[str] = None
+    total_orders: int = 0
+    predicted_days_to_next_purchase: float = 0.0
+    predicted_next_purchase_date: Optional[str] = None
+    model_used: str = "statistical_baseline"
+    confidence_note: str = ""
+
+
+class RecommendationItem(BaseModel):
+    type: str = Field(..., description="Recommendation category")
+    title: str = Field(..., description="Short title")
+    action: str = Field(..., description="Human-friendly recommended action")
+
+
+class Customer360Response(BaseModel):
+    """Full 360-degree customer view: analytics + ML predictions + recommendations."""
+    customer_id: str
+    segment: str
+    segment_key: str
+    segment_description: str
+    rfm_code: str
+    recency_days: Optional[int] = None
+    total_orders: int
+    total_revenue: float
+    avg_order_value: float
+    historical_clv: float
+    clv_formula: str
+    health_score: float
+    health_label: str
+    churn_prediction: Optional[ChurnPredictionSchema] = None
+    next_purchase_prediction: Optional[NextPurchasePredictionSchema] = None
+    recommendations: List[RecommendationItem] = Field(default_factory=list)
+
+
+class CustomerChurnResponse(BaseModel):
+    """Churn prediction endpoint response."""
+    customer_id: str
+    status: Optional[str] = None
+    churn_probability: Optional[float] = None
+    churned: Optional[bool] = None
+    risk_level: Optional[str] = None
+    summary: Optional[str] = None
+    recommended_action: Optional[str] = None
+    model_used: Optional[str] = None
+    features_used: List[str] = Field(default_factory=list)
+
+
+class CustomerRecommendationResponse(BaseModel):
+    """Recommendation endpoint response."""
+    customer_id: str
+    segment: str
+    health_label: str
+    recommendations: List[RecommendationItem]
+
+
+class NextPurchaseResponse(BaseModel):
+    """Next-purchase prediction endpoint response."""
+    customer_id: str
+    status: Optional[str] = None
+    last_order_date: Optional[str] = None
+    total_orders: int = 0
+    predicted_days_to_next_purchase: Optional[float] = None
+    predicted_next_purchase_date: Optional[str] = None
+    model_used: Optional[str] = None
+    confidence_note: Optional[str] = None
+    summary: Optional[str] = None

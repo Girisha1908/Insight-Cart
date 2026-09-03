@@ -23,10 +23,12 @@ coverage/
 Thumbs.db
 
 # Runtime data
-data/raw/*.csv
 data/processed/*
 !data/processed/.gitkeep
-data/demo/*.csv
+
+# CSV files — exclude everywhere, then allow demo data
+*.csv
+!data/demo/olist/raw/*.csv
 
 # ML artifacts
 ml/models/**/*.joblib

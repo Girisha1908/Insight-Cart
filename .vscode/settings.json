@@ -1,0 +1,13 @@
+{
+  // Point the Python language server at the project virtual env (Python 3.14).
+  "python.defaultInterpreterPath": "${workspaceFolder}/backend/.venv/Scripts/python.exe",
+  "python.analysis.extraPaths": [
+    "${workspaceFolder}/backend",
+    "${workspaceFolder}"
+  ],
+  // Exclude generated/build paths so the language server stays fast and accurate.
+  "files.exclude": {
+    "**/__pycache__": true,
+    "backend/.venv": true
+  }
+}

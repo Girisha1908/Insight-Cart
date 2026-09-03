@@ -1,0 +1,20 @@
+{
+  // Pyright/Pylance configuration for InsightCart.
+  // Without this file the analyzer falls back to a guessed interpreter
+  // (e.g. MSYS2 Python on PATH, which lacks numpy/joblib) and can't resolve
+  // the backend `app` package when files under `ml/` import it.
+  //
+  // The virtual env lives at backend/.venv (Python 3.14) and holds all 3rd-party
+  // deps (numpy, pandas, scikit-learn, xgboost, joblib, ...). The `app` package
+  // lives at backend/app, so `backend` must be on the import path.
+  "include": ["backend", "ml", "scripts"],
+  "venvPath": "./backend",
+  "venv": ".venv",
+  "extraPaths": ["./backend"],
+  "exclude": [
+    "**/.venv",
+    "**/__pycache__",
+    "**/node_modules",
+    "**/.git"
+  ]
+}

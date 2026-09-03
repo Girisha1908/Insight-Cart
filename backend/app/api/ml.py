@@ -72,9 +72,9 @@ def get_churn_summary(db: Session = Depends(get_db)) -> dict:
     svc = FeatureEngineeringService(db)
     features_df, _ = svc.build_features(only_with_orders=True)
 
-    # Predict for all customers.
+    # Predict for all unique customers.
     predictions = []
-    for cid in features_df["customer_id"]:
+    for cid in features_df["customer_unique_id"]:
         pred = predict_churn(db, cid)
         if pred:
             predictions.append(pred)

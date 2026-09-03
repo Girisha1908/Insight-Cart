@@ -63,16 +63,28 @@ class FeatureEngineeringService:
         return pd.DataFrame(self.db.execute(stmt).all())
 
     def _load_orders(self) -> pd.DataFrame:
-        stmt = select(
-            Order.order_id,
-            Order.customer_id,
-            Order.order_date,
-            Order.order_status,
-            Order.order_value,
+        """Load orders joined to their real customer identity.
+
+        Olist-style data carries a transaction-level ``customer_id`` that is
+        unique per order; the repeat-purchase identity lives on
+        ``customer_unique_id``. Every order row is joined to the customers
+        table so downstream aggregation can group by ``customer_unique_id``.
+        """
+        stmt = (
+            select(
+                Order.order_id,
+                Order.customer_id,
+                Customer.customer_unique_id,
+                Order.order_date,
+                Order.order_status,
+                Order.order_value,
+            )
+            .join(Customer, Order.customer_id == Customer.customer_id)
         )
         df = pd.DataFrame(self.db.execute(stmt).all())
         if df.empty:
             return df
+        df["customer_unique_id"] = df["customer_unique_id"].astype(str).str.strip()
         df["order_date"] = pd.to_datetime(df["order_date"], errors="coerce", utc=True)
         df["order_value"] = pd.to_numeric(df["order_value"], errors="coerce").fillna(0.0)
         return df
@@ -106,31 +118,38 @@ class FeatureEngineeringService:
         self,
         only_with_orders: bool = True,
     ) -> tuple[pd.DataFrame, pd.Timestamp]:
-        """Return one row per customer with all ML features.
+        """Return one row per *unique* customer with all ML features.
+
+        Order history is aggregated per ``customer_unique_id`` (the real
+        customer identity) rather than transaction-level ``customer_id``,
+        so repeat-purchase behaviour is captured correctly.
 
         Returns
         -------
         (features_df, reference_date)
-            features_df has ``customer_id`` plus every column in ``FEATURE_COLUMNS``.
+            features_df has ``customer_unique_id`` plus every column in
+            ``FEATURE_COLUMNS``.
         """
-        customers = self._load_customers()
+        # One feature row per real (unique) customer — the customers table holds
+        # a row per transaction customer_id, which share a customer_unique_id.
+        customers = self._load_customers().drop_duplicates(subset=["customer_unique_id"])
         orders = self._load_orders()
         ref = self._reference_date(orders)
 
         if customers.empty:
-            return pd.DataFrame(columns=["customer_id", *FEATURE_COLUMNS]), ref
+            return pd.DataFrame(columns=["customer_unique_id", *FEATURE_COLUMNS]), ref
 
         if orders.empty:
-            feats = customers[["customer_id"]].copy()
+            feats = customers[["customer_unique_id"]].copy()
             for col in FEATURE_COLUMNS:
                 feats[col] = 0.0
             return feats, ref
 
-        clean = orders.dropna(subset=["order_date", "customer_id"]).copy()
+        clean = orders.dropna(subset=["order_date", "customer_unique_id"]).copy()
 
-        # ---- core aggregation per customer ----
+        # ---- core aggregation per unique customer ----
         agg = (
-            clean.groupby("customer_id", as_index=False)
+            clean.groupby("customer_unique_id", as_index=False)
             .agg(
                 first_order=("order_date", "min"),
                 last_order=("order_date", "max"),
@@ -151,16 +170,16 @@ class FeatureEngineeringService:
         agg["purchase_frequency"] = (agg["total_orders"] / lifetime_years).round(2)
 
         # ---- average days between consecutive orders ----
-        gap = clean.sort_values(["customer_id", "order_date"])
-        gap["prev"] = gap.groupby("customer_id")["order_date"].shift(1)
+        gap = clean.sort_values(["customer_unique_id", "order_date"])
+        gap["prev"] = gap.groupby("customer_unique_id")["order_date"].shift(1)
         gap["gap_days"] = (gap["order_date"] - gap["prev"]).dt.days
         avg_gap = (
             gap.dropna(subset=["gap_days"])
-            .groupby("customer_id")["gap_days"]
+            .groupby("customer_unique_id")["gap_days"]
             .mean()
             .rename("days_between_orders")
         )
-        agg = agg.merge(avg_gap, on="customer_id", how="left")
+        agg = agg.merge(avg_gap, on="customer_unique_id", how="left")
 
         # ---- optional product features from order_items ----
         items = self._load_order_items()
@@ -173,8 +192,8 @@ class FeatureEngineeringService:
                     total_item_value=("unit_price", "sum"),
                 )
             )
-            order_prod = clean[["order_id", "customer_id"]].merge(prod, on="order_id", how="left")
-            cust_prod = order_prod.groupby("customer_id", as_index=False).agg(
+            order_prod = clean[["order_id", "customer_unique_id"]].merge(prod, on="order_id", how="left")
+            cust_prod = order_prod.groupby("customer_unique_id", as_index=False).agg(
                 category_count=("product_count", "sum"),
                 total_discount=("total_discount", "sum"),
                 total_item_value=("total_item_value", "sum"),
@@ -184,16 +203,16 @@ class FeatureEngineeringService:
             ).fillna(0.0)
             cust_prod["return_rate"] = 0.0  # no explicit return data
             agg = agg.merge(
-                cust_prod[["customer_id", "category_count", "discount_usage", "return_rate"]],
-                on="customer_id",
+                cust_prod[["customer_unique_id", "category_count", "discount_usage", "return_rate"]],
+                on="customer_unique_id",
                 how="left",
             )
 
         # ---- merge with customers and fill defaults ----
-        feats = customers[["customer_id"]].merge(
+        feats = customers[["customer_unique_id"]].merge(
             agg[
                 [
-                    "customer_id",
+                    "customer_unique_id",
                     "recency_days",
                     "total_orders",
                     "total_revenue",
@@ -205,7 +224,7 @@ class FeatureEngineeringService:
                 + (["category_count", "discount_usage", "return_rate"]
                    if "category_count" in agg.columns else [])
             ],
-            on="customer_id",
+            on="customer_unique_id",
             how="left",
         )
 
@@ -241,24 +260,27 @@ def build_churn_label(
     """
     ref = reference_date.tz_convert("UTC") if reference_date.tzinfo else reference_date
 
+    # Real customer identity when available; fall back to transaction id.
+    key_col = "customer_unique_id" if "customer_unique_id" in orders_df.columns else "customer_id"
+
     if "last_order" in orders_df.columns:
         # Pre-aggregated: already has customer-level last_order.
-        df = orders_df[["customer_id", "last_order"]].copy()
+        df = orders_df[[key_col, "last_order"]].copy()
     elif "order_date" in orders_df.columns:
         # Raw orders: aggregate to get last order per customer.
-        clean = orders_df.dropna(subset=["customer_id", "order_date"]).copy()
+        clean = orders_df.dropna(subset=[key_col, "order_date"]).copy()
         df = (
-            clean.groupby("customer_id", as_index=False)["order_date"]
+            clean.groupby(key_col, as_index=False)["order_date"]
             .max()
             .rename(columns={"order_date": "last_order"})
         )
     else:
-        return pd.DataFrame(columns=["customer_id", "churned"])
+        return pd.DataFrame(columns=[key_col, "churned"])
 
     last = pd.to_datetime(df["last_order"], utc=True, errors="coerce")
     recency = (ref - last).dt.days
     df["churned"] = ((recency > churn_days) | recency.isna()).astype(int)
-    return df[["customer_id", "churned"]]
+    return df[[key_col, "churned"]]
 
 
 def build_feature_matrix(
@@ -267,14 +289,17 @@ def build_feature_matrix(
 ) -> pd.DataFrame:
     """Return a clean feature matrix ready for model training.
 
-    If *labels_df* is provided (must contain ``customer_id`` and ``churned``),
-    it is merged in so the caller can do a train/test split directly.
+    If *labels_df* is provided (must contain a ``customer_unique_id``/``customer_id``
+    key and ``churned``), it is merged in so the caller can do a train/test
+    split directly. The merge keys on ``customer_unique_id`` when both frames carry it,
+    otherwise on ``customer_id``.
     """
+    key_col = "customer_unique_id" if "customer_unique_id" in features_df.columns else "customer_id"
     feat_cols = [c for c in FEATURE_COLUMNS if c in features_df.columns]
-    X = features_df[["customer_id"] + feat_cols].copy()
+    X = features_df[[key_col] + feat_cols].copy()
 
-    if labels_df is not None and "churned" in labels_df.columns:
-        X = X.merge(labels_df[["customer_id", "churned"]], on="customer_id", how="inner")
+    if labels_df is not None and "churned" in labels_df.columns and key_col in labels_df.columns:
+        X = X.merge(labels_df[[key_col, "churned"]], on=key_col, how="inner")
 
     return X
 
@@ -285,20 +310,24 @@ def build_next_purchase_target(
     """Compute ``avg_days_to_next_purchase`` per customer.
 
     Only customers with 2+ orders receive a value; others get NaN (excluded
-    from training).
+    from training). Groups by ``customer_unique_id`` when present (repeat
+    purchases made under different transaction ``customer_id``s), falling
+    back to ``customer_id`` otherwise.
     """
+    key_col = "customer_unique_id" if "customer_unique_id" in orders_df.columns else "customer_id"
+
     if orders_df.empty or orders_df["order_date"].isna().all():
-        return pd.DataFrame(columns=["customer_id", "avg_days_to_next_purchase"])
+        return pd.DataFrame(columns=[key_col, "avg_days_to_next_purchase"])
 
-    df = orders_df.dropna(subset=["order_date", "customer_id"]).copy()
-    df = df.sort_values(["customer_id", "order_date"])
+    df = orders_df.dropna(subset=["order_date", key_col]).copy()
+    df = df.sort_values([key_col, "order_date"])
 
-    df["next_order"] = df.groupby("customer_id")["order_date"].shift(-1)
+    df["next_order"] = df.groupby(key_col)["order_date"].shift(-1)
     df["days_to_next"] = (df["next_order"] - df["order_date"]).dt.days
 
     result = (
         df.dropna(subset=["days_to_next"])
-        .groupby("customer_id")["days_to_next"]
+        .groupby(key_col)["days_to_next"]
         .mean()
         .reset_index()
         .rename(columns={"days_to_next": "avg_days_to_next_purchase"})

@@ -29,8 +29,10 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from app.models.customer import Customer
 from app.services.ml.feature_engineering import (
     FEATURE_COLUMNS,
     FeatureEngineeringService,
@@ -41,6 +43,11 @@ from ml.evaluation.metrics import evaluate_classification, select_best_model
 
 # Where the best model and metadata are saved.
 _MODEL_DIR = Path(__file__).resolve().parent.parent / "models" / "churn"
+
+# recency_days deterministically encodes the churn label (label = last order
+# older than churn_days), so it leaks the target into training and yields
+# artificially perfect metrics. Exclude it from the trained model.
+CHURN_TRAINING_COLUMNS = [c for c in FEATURE_COLUMNS if c != "recency_days"]
 
 
 def _get_models() -> dict[str, Any]:
@@ -119,10 +126,13 @@ def train_churn_models(
         }
 
     labels_df = build_churn_label(orders_df, ref_date, churn_days=churn_days)
-    labels_df = labels_df[["customer_id", "churned"]]
+    # Labels are keyed by the same identity as the feature matrix
+    # (customer_unique_id when available, else customer_id).
+    label_key = "customer_unique_id" if "customer_unique_id" in labels_df.columns else "customer_id"
+    labels_df = labels_df[[label_key, "churned"]]
 
     X_full = build_feature_matrix(features_df, labels_df)
-    feat_cols = [c for c in FEATURE_COLUMNS if c in X_full.columns]
+    feat_cols = [c for c in CHURN_TRAINING_COLUMNS if c in X_full.columns]
     X = X_full[feat_cols].values
     y = X_full["churned"].values
 
@@ -200,9 +210,19 @@ def predict_churn(
     feat_cols: list[str] = joblib.load(feat_path)
     meta = json.loads(meta_path.read_text())
 
+    # Resolve the requested id to the unique-customer feature row. The input
+    # may be a transaction-level customer_id or a customer_unique_id.
+    uid = db.execute(
+        select(Customer.customer_unique_id).where(
+            or_(Customer.customer_id == customer_id, Customer.customer_unique_id == customer_id)
+        )
+    ).first()
+    if uid is None:
+        return None
+
     svc = FeatureEngineeringService(db)
     features_df, _ = svc.build_features(only_with_orders=True)
-    row = features_df[features_df["customer_id"] == customer_id]
+    row = features_df[features_df["customer_unique_id"] == uid[0]]
     if row.empty:
         return None
 

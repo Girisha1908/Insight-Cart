@@ -34,8 +34,10 @@ import pandas as pd
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from app.models.customer import Customer
 from app.services.ml.feature_engineering import (
     FEATURE_COLUMNS,
     FeatureEngineeringService,
@@ -44,6 +46,22 @@ from app.services.ml.feature_engineering import (
 from ml.evaluation.metrics import evaluate_classification
 
 _MODEL_DIR = Path(__file__).resolve().parent.parent / "models" / "next_purchase"
+
+# Features that leak the target, avg_days_to_next_purchase:
+# - days_between_orders is the same inter-purchase gap being predicted.
+# - customer_lifetime_days / total_orders algebraically reconstruct the mean
+#   inter-purchase gap (lifetime ≈ gap × orders), and purchase_frequency is a
+#   direct reciprocal of that ratio.
+# Excluding them yields a generalizable model instead of R²≈1.0. Keep standard
+# historical/recency features (recency, revenue, order value, etc.) that don't
+# directly compute the target ratio.
+_NEXT_PURCHASE_LEAKY = {
+    "days_between_orders",
+    "customer_lifetime_days",
+    "total_orders",
+    "purchase_frequency",
+}
+NEXT_PURCHASE_TRAINING_COLUMNS = [c for c in FEATURE_COLUMNS if c not in _NEXT_PURCHASE_LEAKY]
 
 
 def train_next_purchase_model(
@@ -74,8 +92,10 @@ def train_next_purchase_model(
     target_df = build_next_purchase_target(orders_df)
     baseline_mean = float(target_df["avg_days_to_next_purchase"].mean()) if not target_df.empty else None
 
-    # ML model: only when enough data.
-    repeat_customers = target_df["customer_id"].nunique()
+    # ML model: only when enough data. Target is keyed by real customer
+    # identity (customer_unique_id when available).
+    target_key = "customer_unique_id" if "customer_unique_id" in target_df.columns else "customer_id"
+    repeat_customers = target_df[target_key].nunique()
 
     if repeat_customers < 30 or features_df.empty:
         mean_txt = f"{baseline_mean:.1f}" if baseline_mean is not None else "N/A"
@@ -88,9 +108,9 @@ def train_next_purchase_model(
                        f"need >= 30 repeat customers for ML model (have {repeat_customers})",
         }
 
-    # Build ML training data.
-    X_full = features_df.merge(target_df, on="customer_id", how="inner")
-    feat_cols = [c for c in FEATURE_COLUMNS if c in X_full.columns]
+    # Build ML training data — merge on the shared identity key.
+    X_full = features_df.merge(target_df, on=target_key, how="inner")
+    feat_cols = [c for c in NEXT_PURCHASE_TRAINING_COLUMNS if c in X_full.columns]
     X = X_full[feat_cols].values
     y = X_full["avg_days_to_next_purchase"].values
 
@@ -153,16 +173,27 @@ def predict_next_purchase(
 
     Returns ``None`` if no order data is available for this customer.
     """
+    # Resolve the requested id to the unique-customer entity. The input may be
+    # a transaction-level customer_id or a customer_unique_id.
+    uid = db.execute(
+        select(Customer.customer_unique_id).where(
+            or_(Customer.customer_id == customer_id, Customer.customer_unique_id == customer_id)
+        )
+    ).first()
+    if uid is None:
+        return None
+    unique_id = uid[0]
+
     svc = FeatureEngineeringService(db)
     features_df, ref_date = svc.build_features(only_with_orders=True)
     orders_df = svc._load_orders()
 
-    row = features_df[features_df["customer_id"] == customer_id]
+    row = features_df[features_df["customer_unique_id"] == unique_id]
     if row.empty:
         return None
 
-    # Find the last order date.
-    cust_orders = orders_df[orders_df["customer_id"] == customer_id].dropna(subset=["order_date"])
+    # Find the last order date across all orders of this unique customer.
+    cust_orders = orders_df[orders_df["customer_unique_id"] == unique_id].dropna(subset=["order_date"])
     if cust_orders.empty:
         return None
 
@@ -183,7 +214,8 @@ def predict_next_purchase(
     else:
         # Statistical baseline.
         target_df = build_next_purchase_target(orders_df)
-        cust_target = target_df[target_df["customer_id"] == customer_id]
+        target_key = "customer_unique_id" if "customer_unique_id" in target_df.columns else "customer_id"
+        cust_target = target_df[target_df[target_key] == unique_id]
         if not cust_target.empty:
             predicted_days = float(cust_target.iloc[0]["avg_days_to_next_purchase"])
         elif total_orders > 1:

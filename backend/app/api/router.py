@@ -7,7 +7,7 @@ with the other developer before changing existing ones.
 
 from fastapi import APIRouter
 
-from app.api import business, customers, ml, opportunities, products, upload
+from app.api import ask, business, customers, ml, opportunities, products, upload
 
 api_router = APIRouter()
 
@@ -19,3 +19,4 @@ api_router.include_router(
 )
 api_router.include_router(upload.router, prefix="/data", tags=["upload"])
 api_router.include_router(ml.router, prefix="/ml", tags=["ml"])
+api_router.include_router(ask.router, prefix="/ask", tags=["ask"])

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { apiFetch } from '../services/api'
 
 interface HealthResponse {
@@ -29,6 +30,9 @@ export default function Landing() {
           <p className="text-sm text-slate-400">Waiting for API…</p>
         )}
       </div>
+      <Link to="/ask" className="rounded-lg bg-indigo-600 px-5 py-2.5 font-semibold text-white hover:bg-indigo-700">
+        Ask your data →
+      </Link>
     </div>
   )
 }

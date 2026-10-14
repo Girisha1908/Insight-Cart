@@ -37,3 +37,21 @@ GET /api/health
   behind a `technical` or `details` field.
 
 > The full planned endpoint list is documented in `README.md` → "API Structure".
+
+## Ask Your Data
+
+| Prefix | Owner | File |
+|---|---|---|
+| `/api/ask` | Developer 2 | `backend/app/api/ask.py` |
+
+```
+POST /api/ask
+{"question": "Show me last month's best customer.", "mode": "engine", "clarifications": []}
+-> {"status": "needs_clarification", "clarifications": [{"term": "best_customer", "options": [...]}], ...}
+
+POST /api/ask   (same question + {"clarifications": [{"term": "best_customer", "option_id": "orders"}]})
+-> {"status": "answered", "sql": "...", "columns": [...], "rows": [...], "assumptions": [...], ...}
+```
+
+`status` is one of `needs_clarification | answered | unsupported | rejected | error` (HTTP 200);
+malformed requests return 422. Full contract: `docs/ask/PRD.md` §6.
